@@ -1,122 +1,160 @@
 """
-scoring.py — końcowy scoring i klasyfikacja
-quality  : ≥ 8 zielonych + 0 czerwonych
-watchlist: 5-7 zielonych + max 2 czerwone (i żadna nie z Q6/Q10 proxy)
-reject   : ≥ 3 czerwone ALBO czerwona w debt/runway/perf_6m/rsi
+scoring.py
+==========
+Wazony scoring + klasyfikacja koncowa: quality / watchlist / reject.
+
+Najwieksze wagi (zgodnie z checklista): revenue growth, cash runway, debt.
+
+Klasyfikacja:
+  - quality   = duzo zielonych (>=8), 0 czerwonych, ZADNEJ hard red line
+  - watchlist = wynik mieszany bez twardego faila (reds <= 2, brak hard red line)
+  - reject    = >=3 czerwone ALBO jakakolwiek hard red line
+
+Hard red line => ticker NIGDY nie moze byc quality (automatyczny veto).
+
+Sygnaly "na" (brak danych) sa neutralne: nie licza sie do score ani do
+mianownika — dzieki temu braki danych nie zanizaja sztucznie procentu.
 """
+from __future__ import annotations
 
-
-# wagi reguł — odzwierciedlają ważność z checklisty
+# Wagi regul — odzwierciedlaja waznosc z checklisty.
 WEIGHTS = {
-    "revenue_growth":     3,   # Q3 — najważniejszy twardy wskaźnik
-    "revenue_trend":      2,   # Q3 — trend
+    "revenue_growth":     3,   # Q3 — najwazniejszy twardy wskaznik
+    "revenue_trend":      2,   # Q3
     "gross_margin":       2,   # Q4
     "gross_margin_trend": 1,   # Q4
+    "operating_margin":   1,   # Q4 (pomocnicza)
     "rule_of_40":         2,   # Q4
-    "debt_to_revenue":    2,   # Q6 — Red Line proxy
-    "cash_runway":        3,   # Q6/Q10 — przeżycie (Red Line)
-    "ev_to_sales":        2,   # Q9
-    "ps_ratio":           1,   # Q9
-    "perf_6m":            2,   # Red Line #1
-    "perf_12m":           1,   # Red Line #1
-    "rsi":                1,   # Red Line #6
-    "insider_selling":    1,   # Red Line #3
+    "debt_to_revenue":    3,   # Q6 — RED LINE
+    "cash_runway":        3,   # Q6 — RED LINE (przezycie)
+    "valuation":          2,   # Q9
+    "peg":                1,   # Q9 (opcjonalna)
+    "perf_6m":            2,   # RED LINE
+    "perf_12m":           1,   # RED LINE
+    "rsi":                1,   # RED LINE
+    "pre_revenue":        2,   # RED LINE
+    "insider":            1,   # sygnal miekki z yfinance (opcjonalny)
 }
 
 SCORE_MAP = {"green": 2, "warning": 1, "red": 0}
 
-# Reguły, których czerwona oznacza automatyczny REJECT (Red Lines z checklisty)
-HARD_RED_LINES = {"debt_to_revenue", "cash_runway", "perf_6m", "rsi"}
+# Reguly, ktorych czerwony sygnal = automatyczny REJECT (twarde veto).
+HARD_RED_LINES = {
+    "debt_to_revenue",
+    "cash_runway",
+    "perf_6m",
+    "perf_12m",
+    "rsi",
+    "pre_revenue",
+}
 
 
 def compute_score(rules_eval: dict) -> dict:
-    """
-    Wejście: {rule_name: (signal, reason)}
-    Wyjście: {score, max_score, pct, greens, warnings, reds, hard_red, label}
+    """Wejscie: {rule_name: (signal, reason)}.
+
+    Zwraca dict ze score, pct, licznikami sygnalow i etykieta.
     """
     score = 0
     max_score = 0
-    greens = warnings = reds = 0
+    greens = warnings = reds = na = 0
     hard_red = False
+    hard_red_hits = []
 
-    for rule_name, (signal, _) in rules_eval.items():
-        if signal == "warning" and rule_name not in WEIGHTS:
-            continue  # ignoruj nieznane reguły
-        w = WEIGHTS.get(rule_name, 1)
-        max_score += w * 2
-        score += SCORE_MAP[signal] * w
+    for rule_name, (signal, _reason) in rules_eval.items():
+        weight = WEIGHTS.get(rule_name, 1)
+
+        if signal == "na":
+            na += 1
+            continue  # neutralne — poza scoringiem
+
+        max_score += weight * 2
+        score += SCORE_MAP.get(signal, 0) * weight
 
         if signal == "green":
             greens += 1
         elif signal == "warning":
             warnings += 1
-        else:
+        elif signal == "red":
             reds += 1
             if rule_name in HARD_RED_LINES:
                 hard_red = True
+                hard_red_hits.append(rule_name)
 
-    pct = score / max_score if max_score else 0
+    pct = (score / max_score * 100) if max_score else 0.0
 
-    # klasyfikacja
+    # ── Klasyfikacja ──
     if hard_red or reds >= 3:
         label = "reject"
     elif greens >= 8 and reds == 0:
         label = "quality"
-    elif greens >= 5 and reds <= 2:
+    elif reds <= 2:
         label = "watchlist"
-    elif reds >= 2:
-        label = "reject"
     else:
-        label = "watchlist"
+        label = "reject"
 
     return {
         "score": score,
         "max_score": max_score,
-        "pct": round(pct * 100, 1),
+        "pct": round(pct, 1),
         "greens": greens,
         "warnings": warnings,
         "reds": reds,
+        "na": na,
         "hard_red": hard_red,
+        "hard_red_lines": ",".join(hard_red_hits),
         "label": label,
     }
 
 
-def label_emoji(label: str) -> str:
-    return {"quality": "🟢 QUALITY", "watchlist": "🟡 WATCHLIST", "reject": "🔴 REJECT"}.get(label, label)
+def label_badge(label: str) -> str:
+    return {
+        "quality":   "\U0001F7E2 QUALITY",
+        "watchlist": "\U0001F7E1 WATCHLIST",
+        "reject":    "\U0001F534 REJECT",
+        "error":     "\u26A0\uFE0F  ERROR",
+    }.get(label, label)
 
 
-def format_report(ticker: str, metrics: dict, rules_eval: dict, score_result: dict) -> str:
+def format_report(ticker: str, metrics: dict, rules_eval: dict, score: dict) -> str:
+    """Czytelny raport tekstowy dla jednego tickera (CLI)."""
+    icons = {"green": "\u2705", "warning": "\u26A0\uFE0F", "red": "\U0001F534", "na": "\u2796"}
+    bar = "=" * 64
+    hard = "  \U0001F6D1 HARD RED LINE" if score.get("hard_red") else ""
     lines = [
-        f"{'='*60}",
-        f"  {ticker}  |  {label_emoji(score_result['label'])}  |  Score: {score_result['pct']}%",
-        f"  ✅ {score_result['greens']}  ⚠️ {score_result['warnings']}  🔴 {score_result['reds']}  {'🔴 HARD RED LINE' if score_result['hard_red'] else ''}",
-        f"{'='*60}",
+        bar,
+        f" {ticker} | {label_badge(score['label'])} | Score: {score['pct']}%{hard}",
+        f" \u2705 {score['greens']}  \u26A0\uFE0F {score['warnings']}  "
+        f"\U0001F534 {score['reds']}  \u2796 {score['na']}",
+        bar,
     ]
     for rule, (signal, reason) in rules_eval.items():
-        icon = {"green": "✅", "warning": "⚠️", "red": "🔴"}[signal]
-        lines.append(f"  {icon} [{rule:20s}] {reason}")
+        icon = icons.get(signal, "?")
+        lines.append(f"  {icon} [{rule:18s}] {reason}")
 
     key_metrics = [
-        ("Revenue YoY",       metrics.get("revenue_growth_yoy"),   ".1%"),
-        ("Gross Margin",      metrics.get("gross_margin"),          ".1%"),
-        ("Op. Margin",        metrics.get("operating_margin"),      ".1%"),
-        ("Rule of 40",        metrics.get("rule_of_40"),            ".1f"),
-        ("Debt/Rev",          metrics.get("debt_to_revenue"),       ".2f"),
-        ("Runway (mo.)",      metrics.get("cash_runway_months"),    ".0f"),
-        ("6M Perf",           metrics.get("perf_6m"),               ".1%"),
-        ("12M Perf",          metrics.get("perf_12m"),              ".1%"),
-        ("RSI-14",            metrics.get("rsi_14"),                ".1f"),
-        ("EV/Sales",          metrics.get("ev_to_sales"),           ".1f"),
-        ("P/S",               metrics.get("ps_ratio"),              ".1f"),
+        ("Revenue YoY",  metrics.get("revenue_growth_yoy"), ".1%"),
+        ("Gross margin", metrics.get("gross_margin"),       ".1%"),
+        ("Op. margin",   metrics.get("operating_margin"),   ".1%"),
+        ("Rule of 40",   metrics.get("rule_of_40"),         ".1f"),
+        ("Debt/Rev",     metrics.get("debt_to_revenue"),    ".2f"),
+        ("Runway (mo)",  metrics.get("cash_runway_months"), ".0f"),
+        ("6M perf",      metrics.get("perf_6m"),            ".1%"),
+        ("12M perf",     metrics.get("perf_12m"),           ".1%"),
+        ("RSI-14",       metrics.get("rsi_14"),             ".1f"),
+        ("EV/Sales",     metrics.get("ev_to_sales"),        ".1f"),
+        ("P/S",          metrics.get("ps_ratio"),           ".1f"),
+        ("PEG",          metrics.get("peg_ratio"),          ".2f"),
     ]
-    lines.append(f"{'─'*60}")
-    lines.append("  KEY METRICS")
+    lines.append("-" * 64)
+    lines.append(" KEY METRICS")
     for name, val, fmt in key_metrics:
-        if val is not None:
+        if val is None:
+            shown = "N/A"
+        else:
             try:
-                fval = format(val, fmt)
+                shown = format(val, fmt)
             except (ValueError, TypeError):
-                fval = str(val)
-            lines.append(f"  {name:20s}: {fval}")
+                shown = str(val)
+        lines.append(f"  {name:14s}: {shown}")
     lines.append("")
     return "\n".join(lines)

@@ -1,0 +1,7 @@
+# Nowa architektura: yfinance + Finviz. Brak klucza API.
+yfinance>=0.2.40
+finvizfinance>=1.0.1
+pandas>=2.0
+numpy>=1.24
+# python-dotenv jest opcjonalne (tylko jesli chcesz uzywac .env do ustawien)
+python-dotenv>=1.0

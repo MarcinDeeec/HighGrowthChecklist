@@ -1,0 +1,7 @@
+# Jeden ticker na linie. Linie zaczynajace sie od # sa ignorowane.
+NVDA
+CRWD
+DDOG
+NET
+TTD
+CELH
