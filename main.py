@@ -35,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import data_client as dc
 import discovery as disc
 import metrics as met
+import report as rep
 import rules as rl
 import scoring as sc
 
@@ -75,7 +76,8 @@ def screen_ticker(ticker: str, verbose: bool = True) -> dict:
     return row
 
 
-def run(tickers, output_path: str, delay: float = 0.0, verbose: bool = True) -> None:
+def run(tickers, output_path: str, delay: float = 0.0, verbose: bool = True,
+        html_report=None, xlsx_report=None) -> None:
     results = []
     total = len(tickers)
     for i, ticker in enumerate(tickers, start=1):
@@ -101,6 +103,19 @@ def run(tickers, output_path: str, delay: float = 0.0, verbose: bool = True) -> 
 
     df.to_csv(output_path, index=False, encoding="utf-8-sig")
     print(f"\n\u2705 Wyniki zapisane do: {output_path}")
+
+    if html_report is not None or xlsx_report is not None:
+        rows = df.to_dict(orient="records")
+        html_path = (str(Path(output_path).with_suffix(".html"))
+                     if html_report in (None, "__auto__") else html_report)
+        try:
+            rep.write_html(rows, html_path)
+            print(f"\U0001F4C4 Raport HTML: {html_path}")
+            if xlsx_report:
+                rep.write_xlsx(rows, xlsx_report)
+                print(f"\U0001F4CA Raport XLSX: {xlsx_report}")
+        except Exception as e:
+            print(f"\u26A0\uFE0F  Nie udalo sie wygenerowac raportu: {e}")
 
     print("\n" + "=" * 64)
     print(" RANKING")
@@ -142,6 +157,9 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--delay", type=float, default=0.0,
                    help="Dodatkowe opoznienie miedzy tickerami w sekundach")
     p.add_argument("--no-verbose", action="store_true", help="Nie drukuj szczegolowych raportow")
+    p.add_argument("--report", nargs="?", const="__auto__", default=None,
+                   help="Wygeneruj kolorowy raport HTML (opcjonalnie podaj sciezke .html)")
+    p.add_argument("--xlsx", type=str, default=None, help="Dodatkowo zapisz raport XLSX pod ta sciezka")
     return p.parse_args(argv)
 
 
@@ -177,7 +195,14 @@ def main(argv=None) -> int:
     if not tickers:
         print("Brak tickerow do przetworzenia.")
         return 1
-    run(tickers, output_path=args.output, delay=args.delay, verbose=not args.no_verbose)
+    html_report = None
+    if args.report is not None:
+        html_report = None if args.report == "__auto__" else args.report
+        run(tickers, output_path=args.output, delay=args.delay, verbose=not args.no_verbose,
+            html_report=html_report or "__auto__", xlsx_report=args.xlsx)
+    else:
+        run(tickers, output_path=args.output, delay=args.delay, verbose=not args.no_verbose,
+            xlsx_report=args.xlsx)
     return 0
 
 
